@@ -6,6 +6,23 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
+# Try to import SQLAlchemy dependencies
+try:
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.exc import SQLAlchemyError
+    SQLALCHEMY_AVAILABLE = True
+except ImportError:
+    SQLALCHEMY_AVAILABLE = False
+    st.warning("SQLAlchemy support not available. Install sqlalchemy to enable database connections.")
+
+# Try to import config
+try:
+    from config import POSTGRES_CONFIG, get_connection_string
+    CONFIG_AVAILABLE = True
+except ImportError:
+    CONFIG_AVAILABLE = False
+    st.warning("config.py not found. Create it with your PostgreSQL connection details.")
+
 
 st.set_page_config(
 	page_title="Model Inference Dashboard",
@@ -60,6 +77,43 @@ def load_uploaded_file(uploaded_file) -> pd.DataFrame:
 	except Exception as error:
 		st.error(f"Failed to read uploaded CSV: {error}")
 		return pd.DataFrame()
+
+
+def load_from_postgres(table_name: str = None, custom_query: str = None) -> pd.DataFrame:
+    """Load data from PostgreSQL table using SQLAlchemy."""
+    if not SQLALCHEMY_AVAILABLE:
+        st.error("SQLAlchemy support not available. Install sqlalchemy.")
+        return pd.DataFrame()
+    
+    if not CONFIG_AVAILABLE:
+        st.error("Database configuration not available. Check config.py.")
+        return pd.DataFrame()
+    
+    try:
+        # Create SQLAlchemy engine
+        connection_string = get_connection_string()
+        engine = create_engine(connection_string)
+        
+        # Use provided table name or default from config
+        table = table_name if table_name else POSTGRES_CONFIG.get('table_name', 'experiments')
+        
+        # Load data
+        if custom_query:
+            # Use custom query if provided
+            df = pd.read_sql(text(custom_query), engine)
+        else:
+            # Use simple SELECT * FROM table
+            df = pd.read_sql(f"SELECT * FROM {table}", engine)
+        
+        engine.dispose()
+        return load_experiments_from_dataframe(df)
+        
+    except SQLAlchemyError as error:
+        st.error(f"Database error: {error}")
+        return pd.DataFrame()
+    except Exception as error:
+        st.error(f"Failed to connect to database: {error}")
+        return pd.DataFrame()
 
 
 def get_categorical_columns(df: pd.DataFrame) -> List[str]:
@@ -162,36 +216,116 @@ def generate_report_md(
 def main() -> None:
 	st.title("📊 Model Inference Dashboard")
 	
-	# Sidebar for file upload
+	# Sidebar for data import
 	with st.sidebar:
 		st.header("📁 Data Import")
-		st.caption("Upload your own CSV file or use the default data")
+		st.caption("Choose your data source")
 		
-		uploaded_file = st.file_uploader(
-			"Choose a CSV file",
-			type=['csv'],
-			help="Upload your own CSV file to analyze. If no file is uploaded, the default data will be used."
+		# Data source selection
+		data_source = st.radio(
+			"Select data source:",
+			["📄 CSV File", "🗄️ PostgreSQL", "📊 Default Data"],
+			index=2
 		)
 		
-		if uploaded_file is not None:
-			st.success(f"✅ File uploaded: {uploaded_file.name}")
-			df = load_uploaded_file(uploaded_file)
-			if df.empty:
-				st.error("Failed to load uploaded file. Please check the file format.")
+		df = pd.DataFrame()
+		uploaded_file = None
+		data_source_name = "Default CSV"
+		table_name = None
+		
+		if data_source == "📄 CSV File":
+			uploaded_file = st.file_uploader(
+				"Choose a CSV file",
+				type=['csv'],
+				help="Upload your own CSV file to analyze."
+			)
+			
+			if uploaded_file is not None:
+				st.success(f"✅ File uploaded: {uploaded_file.name}")
+				df = load_uploaded_file(uploaded_file)
+				data_source_name = f"Uploaded CSV: {uploaded_file.name}"
+				
+				if df.empty:
+					st.error("Failed to load uploaded file. Please check the file format.")
+					st.stop()
+				
+				# Add clear button
+				if st.button("🗑️ Clear uploaded file", type="secondary"):
+					st.rerun()
+			else:
+				st.info("Please upload a CSV file to continue.")
+				st.stop()
+				
+		elif data_source == "🗄️ PostgreSQL":
+			if not SQLALCHEMY_AVAILABLE:
+				st.error("SQLAlchemy support not available. Install sqlalchemy.")
 				st.stop()
 			
-			# Add clear button
-			if st.button("🗑️ Clear uploaded file", type="secondary"):
-				st.rerun()
-		else:
+			if not CONFIG_AVAILABLE:
+				st.error("Database configuration not available. Check config.py.")
+				st.stop()
+			
+			# Query options
+			query_option = st.radio(
+				"Query type:",
+				["📋 Simple Table", "🔍 Custom SQL Query"],
+				index=0
+			)
+			
+			if query_option == "📋 Simple Table":
+				# Allow custom table name
+				table_name = st.text_input(
+					"Table name",
+					value=POSTGRES_CONFIG.get('table_name', 'experiments'),
+					help="Enter the table name to load data from"
+				)
+				
+				if st.button("🔄 Load from PostgreSQL", type="primary"):
+					with st.spinner("Connecting to PostgreSQL..."):
+						df = load_from_postgres(table_name=table_name)
+						data_source_name = f"PostgreSQL: {table_name}"
+					
+					if df.empty:
+						st.error("Failed to load data from PostgreSQL. Check your connection settings.")
+						st.stop()
+					else:
+						st.success(f"✅ Loaded {len(df):,} rows from PostgreSQL table: {table_name}")
+			
+			else:  # Custom SQL Query
+				st.info(" Enter a custom SQL query to load data")
+				custom_query = st.text_area(
+					"SQL Query",
+					value="SELECT * FROM experiments LIMIT 1000",
+					height=100,
+					help="Enter your SQL query here"
+				)
+				
+				if st.button("🔄 Execute Query", type="primary"):
+					with st.spinner("Executing SQL query..."):
+						df = load_from_postgres(custom_query=custom_query)
+						data_source_name = "PostgreSQL: Custom Query"
+					
+					if df.empty:
+						st.error("Failed to execute query. Check your SQL syntax and connection settings.")
+						st.stop()
+					else:
+						st.success(f"✅ Query executed successfully. Loaded {len(df):,} rows.")
+			
+			if df.empty:
+				st.info("Click 'Load from PostgreSQL' or 'Execute Query' to fetch data.")
+				st.stop()
+				
+		else:  # Default Data
 			st.info("📊 Using default data from ./data/experiments.csv")
 			csv_path = "./data/experiments.csv"
 			df = load_experiments(csv_path)
+			data_source_name = "Default experiments.csv"
+			
 			if df.empty:
-				st.error("Default data file not found. Please upload a CSV file.")
+				st.error("Default data file not found. Please upload a CSV file or connect to PostgreSQL.")
 				st.stop()
-	
-	st.caption(f"Interactive analysis of model inference results - {len(df):,} rows loaded")
+
+	st.caption(f"Interactive analysis of model inference results - {len(df):,} rows loaded from {data_source_name}")
 
 	# Sidebar controls
 	with st.sidebar:
