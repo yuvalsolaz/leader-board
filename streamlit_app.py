@@ -15,19 +15,13 @@ st.set_page_config(
 
 
 @st.cache_data(show_spinner=False)
-def load_experiments(csv_path: str) -> pd.DataFrame:
-	"""Load experiments CSV, coerce likely datetime columns, and return DataFrame.
+def load_experiments_from_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+	"""Process DataFrame, coerce likely datetime columns, and return processed DataFrame.
 
-	The function is cached to improve performance when re-running with the same file.
+	The function is cached to improve performance when re-running with the same data.
 	"""
-	try:
-		df = pd.read_csv(csv_path)
-	except FileNotFoundError:
-		st.error(f"Data file not found at: {csv_path}")
-		return pd.DataFrame()
-	except Exception as error:
-		st.error(f"Failed to read CSV: {error}")
-		return pd.DataFrame()
+	if df.empty:
+		return df
 
 	# Try to detect and convert likely datetime columns
 	for column_name in df.columns:
@@ -39,6 +33,33 @@ def load_experiments(csv_path: str) -> pd.DataFrame:
 				df[column_name] = parsed.dt.tz_localize(None)
 
 	return df
+
+
+@st.cache_data(show_spinner=False)
+def load_experiments(csv_path: str) -> pd.DataFrame:
+	"""Load experiments CSV, coerce likely datetime columns, and return DataFrame.
+
+	The function is cached to improve performance when re-running with the same file.
+	"""
+	try:
+		df = pd.read_csv(csv_path)
+		return load_experiments_from_dataframe(df)
+	except FileNotFoundError:
+		st.error(f"Data file not found at: {csv_path}")
+		return pd.DataFrame()
+	except Exception as error:
+		st.error(f"Failed to read CSV: {error}")
+		return pd.DataFrame()
+
+
+def load_uploaded_file(uploaded_file) -> pd.DataFrame:
+	"""Load and process uploaded CSV file."""
+	try:
+		df = pd.read_csv(uploaded_file)
+		return load_experiments_from_dataframe(df)
+	except Exception as error:
+		st.error(f"Failed to read uploaded CSV: {error}")
+		return pd.DataFrame()
 
 
 def get_categorical_columns(df: pd.DataFrame) -> List[str]:
@@ -100,9 +121,16 @@ def generate_report_md(
 	metric_col: Optional[str],
 	group_col: Optional[str],
 	date_col: Optional[str],
+	file_name: Optional[str] = None,
 ) -> str:
 	lines: List[str] = []
 	lines.append("# Model Inference Dashboard Report")
+	lines.append("")
+	lines.append("## Data Source")
+	if file_name:
+		lines.append(f"File: {file_name}")
+	else:
+		lines.append("File: Default experiments.csv")
 	lines.append("")
 	lines.append("## Overview")
 	lines.append(f"Total rows (after filters): {len(df):,}")
@@ -133,16 +161,42 @@ def generate_report_md(
 
 def main() -> None:
 	st.title("📊 Model Inference Dashboard")
-	st.caption("Interactive analysis of model inference results from ./data/experiments.csv")
-
-	csv_path = "./data/experiments.csv"
-	df = load_experiments(csv_path)
-	if df.empty:
-		st.stop()
+	
+	# Sidebar for file upload
+	with st.sidebar:
+		st.header("📁 Data Import")
+		st.caption("Upload your own CSV file or use the default data")
+		
+		uploaded_file = st.file_uploader(
+			"Choose a CSV file",
+			type=['csv'],
+			help="Upload your own CSV file to analyze. If no file is uploaded, the default data will be used."
+		)
+		
+		if uploaded_file is not None:
+			st.success(f"✅ File uploaded: {uploaded_file.name}")
+			df = load_uploaded_file(uploaded_file)
+			if df.empty:
+				st.error("Failed to load uploaded file. Please check the file format.")
+				st.stop()
+			
+			# Add clear button
+			if st.button("🗑️ Clear uploaded file", type="secondary"):
+				st.rerun()
+		else:
+			st.info("📊 Using default data from ./data/experiments.csv")
+			csv_path = "./data/experiments.csv"
+			df = load_experiments(csv_path)
+			if df.empty:
+				st.error("Default data file not found. Please upload a CSV file.")
+				st.stop()
+	
+	st.caption(f"Interactive analysis of model inference results - {len(df):,} rows loaded")
 
 	# Sidebar controls
 	with st.sidebar:
-		st.header("Filters")
+		st.divider()
+		st.header("🔍 Filters")
 		datetime_cols = get_datetime_columns(df)
 		categorical_cols = get_categorical_columns(df)
 		numeric_cols = get_numeric_columns(df)
@@ -172,7 +226,21 @@ def main() -> None:
 				categorical_selections[col_name] = selected
 
 		st.divider()
-		st.header("Metrics")
+		st.header("📈 Data Overview")
+		st.metric("Total Rows", f"{len(df):,}")
+		st.metric("Total Columns", f"{len(df.columns):,}")
+		
+		if not df.empty:
+			st.caption("Column types:")
+			numeric_count = len(get_numeric_columns(df))
+			categorical_count = len(get_categorical_columns(df))
+			datetime_count = len(get_datetime_columns(df))
+			st.write(f"• Numeric: {numeric_count}")
+			st.write(f"• Categorical: {categorical_count}")
+			st.write(f"• Datetime: {datetime_count}")
+		
+		st.divider()
+		st.header("📊 Metrics")
 		metric_col = st.selectbox("Select numeric metric", options=["(none)"] + numeric_cols, index=0)
 		metric_col = None if metric_col == "(none)" else metric_col
 
@@ -183,6 +251,13 @@ def main() -> None:
 
 	filtered_df = apply_filters(df, date_col, date_range, categorical_selections)
 
+	# Data preview
+	st.subheader("📋 Data Preview")
+	st.dataframe(df.head(10), use_container_width=True)
+	st.caption(f"Showing first 10 rows of {len(df):,} total rows")
+	
+	st.divider()
+	
 	# KPI metrics
 	st.subheader("Key Metrics")
 	kpi_cols = st.columns(4)
@@ -255,11 +330,17 @@ def main() -> None:
 	st.subheader("Export")
 	col_a, col_b, col_c = st.columns(3)
 
+	# Determine base filename for exports
+	if uploaded_file is not None:
+		base_name = uploaded_file.name.replace('.csv', '')
+	else:
+		base_name = "experiments"
+
 	csv_bytes = filtered_df.to_csv(index=False).encode("utf-8")
 	col_a.download_button(
 		"Download CSV",
 		data=csv_bytes,
-		file_name="experiments_filtered.csv",
+		file_name=f"{base_name}_filtered.csv",
 		mime="text/csv",
 		use_container_width=True,
 	)
@@ -268,7 +349,7 @@ def main() -> None:
 	col_b.download_button(
 		"Download Excel",
 		data=excel_bytes,
-		file_name="experiments_filtered.xlsx",
+		file_name=f"{base_name}_filtered.xlsx",
 		mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 		use_container_width=True,
 	)
@@ -278,6 +359,7 @@ def main() -> None:
 		metric_col=metric_col,
 		group_col=group_col,
 		date_col=date_col,
+		file_name=uploaded_file.name if uploaded_file is not None else None,
 	)
 	col_c.download_button(
 		"Download Report (.md)",

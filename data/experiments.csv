@@ -1,2 +1,5 @@
 index, params, results, git_version, git_commit_message, timestamp, dataset, experiment, sweepId, runId, match_table
 0, "eps:0.6", "precision:0.24",f1ba, "precision recall",12:51:14 27/08/2025, "iris", "iou", 0001, 9667, http://experiment-server/runexp001.json
+0, "eps:0.5", "precision:0.19",f1bc, "F1 score",12:55:15 27/08/2025, "iris", "iou", 0001, 9634, http://experiment-server/runexp002.json
+0, "eps:0.6", "precision:0.24",f1ba, "precision recall",12:51:14 27/08/2025, "iris", "iou", 0001, 9667, http://experiment-server/runexp001.json
+0, "eps:0.5", "precision:0.19",f1bc, "F1 score",12:55:15 27/08/2025, "iris", "iou", 0001, 9634, http://experiment-server/runexp002.json
